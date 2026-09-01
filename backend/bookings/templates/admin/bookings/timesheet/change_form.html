@@ -1,0 +1,17 @@
+{% extends "admin/change_form.html" %}
+
+{% block object-tools-items %}
+  {% if can_decline_timesheet %}
+    <li><a href="{% url 'admin:bookings_timesheet_decline' original.pk %}">Decline timesheet</a></li>
+  {% endif %}
+  {% if can_replace_timesheet %}
+    <li><a href="{% url 'admin:bookings_timesheet_replace' original.pk %}">Replace signed document</a></li>
+  {% endif %}
+  {% if can_void_timesheet %}
+    <li><a href="{% url 'admin:bookings_timesheet_void' original.pk %}">Void duplicate/unusable timesheet</a></li>
+  {% endif %}
+  {% if can_upload_confirmation %}
+    <li><a href="{% url 'admin:bookings_timesheet_confirmation' original.pk %}">Upload Client confirmation</a></li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

@@ -1,0 +1,33 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; <a href="{% url 'admin:bookings_legacysyncrun_changelist' %}">Legacy synchronisation runs</a>
+  &rsaquo; Confirm
+</div>
+{% endblock %}
+
+{% block content %}
+  <h1>Read-only legacy synchronisation</h1>
+  <p>
+    This imports only matching/reference data and aggregated completed-work history
+    from the protected legacy MySQL source.
+  </p>
+  <p><strong>Booking records are not synchronized in either direction.</strong></p>
+  <p>This operation does not create, import, update, cancel, or delete bookings.</p>
+  <p>
+    Run a dry check first. Only choose Synchronise now after reviewing the source counts.
+    A second synchronisation cannot run at the same time.
+  </p>
+  <form method="post">
+    {% csrf_token %}
+    <div class="submit-row">
+      <button type="submit" name="action" value="dry_run">Dry run</button>
+      <button type="submit" name="action" value="sync" class="default">Synchronise now</button>
+      <a href="{% url 'admin:bookings_legacysyncrun_changelist' %}" class="closelink">Cancel</a>
+    </div>
+  </form>
+{% endblock %}

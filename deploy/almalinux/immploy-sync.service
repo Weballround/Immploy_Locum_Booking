@@ -1,0 +1,19 @@
+[Unit]
+Description=IMMploy read-only legacy synchronization
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=immploy
+Group=immploy
+WorkingDirectory=/opt/immploy/current/backend
+EnvironmentFile=/etc/immploy/immploy.env
+ExecStart=/opt/immploy/venv/bin/python manage.py sync_legacy_mysql --config /etc/immploy/legacy-mysql.json
+ExecStart=/opt/immploy/venv/bin/python manage.py sync_legacy_users --config /etc/immploy/legacy-mysql.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+UMask=0077

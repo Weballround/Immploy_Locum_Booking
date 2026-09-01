@@ -1,0 +1,11 @@
+[Unit]
+Description=Run IMMploy read-only legacy synchronization nightly
+
+[Timer]
+OnCalendar=*-*-* 02:15:00 Africa/Johannesburg
+Persistent=true
+RandomizedDelaySec=300
+Unit=immploy-sync.service
+
+[Install]
+WantedBy=timers.target

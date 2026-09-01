@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ${EUID} -ne 0 ]]; then
+  printf 'Run this installer as root.\n' >&2
+  exit 1
+fi
+
+app_root=/opt/immploy/current
+backend_root=${app_root}/backend
+deploy_root=${app_root}/deploy/almalinux
+venv=/opt/immploy/venv
+env_file=/etc/immploy/immploy.env
+
+id immploy >/dev/null 2>&1 || useradd --system --home-dir /opt/immploy --create-home --shell /sbin/nologin immploy
+chmod 0750 /opt/immploy
+install -d -m 0750 -o root -g immploy /etc/immploy
+install -d -m 0750 -o root -g nginx /var/www/immploy
+install -d -m 0750 -o immploy -g nginx /var/www/immploy-static
+install -d -m 0700 -o postgres -g postgres /var/backups/immploy
+
+if [[ ! -s ${env_file} ]]; then
+  django_secret=$(openssl rand -hex 64)
+  mfa_secret=$(openssl rand -hex 64)
+  umask 0077
+  {
+    printf 'DJANGO_DEBUG=false\n'
+    printf 'DJANGO_SECRET_KEY=%s\n' "${django_secret}"
+    printf 'DJANGO_MFA_ENCRYPTION_KEY=%s\n' "${mfa_secret}"
+    printf 'DJANGO_MFA_ISSUER_NAME="IMMploy Locum Booking"\n'
+    printf 'DJANGO_MFA_TRUSTED_LAN_NETWORKS=10.0.0.0/16\n'
+    printf 'DJANGO_MFA_TRUSTED_PROXY_NETWORKS=127.0.0.0/8,::1/128\n'
+    printf 'DJANGO_MFA_TRUSTED_BROWSER_MAX_AGE_SECONDS=2592000\n'
+    printf 'DJANGO_ALLOWED_HOSTS=booking.immploy.com,10.0.0.99,10.0.1.101,127.0.0.1,localhost\n'
+    printf 'DJANGO_CSRF_TRUSTED_ORIGINS=https://booking.immploy.com,https://10.0.0.99,https://10.0.1.101\n'
+    printf 'DJANGO_TRUST_PROXY_HEADERS=true\n'
+    printf 'DJANGO_SECURE_SSL_REDIRECT=true\n'
+    printf 'DJANGO_HSTS_SECONDS=31536000\n'
+    printf 'DJANGO_STATIC_ROOT=/var/www/immploy-static\n'
+    printf 'POSTGRES_DB=immploy_locum\n'
+    printf 'POSTGRES_USER=immploy\n'
+    printf 'POSTGRES_PASSWORD=\n'
+    printf 'POSTGRES_HOST=\n'
+    printf 'POSTGRES_PORT=\n'
+    printf 'LEGACY_MYSQL_CONFIG=/etc/immploy/legacy-mysql.json\n'
+    printf 'SMS_MYMOBILEAPI_BASE_URL=https://rest.mymobileapi.com\n'
+    printf 'SMS_MYMOBILEAPI_CLIENT_ID=\n'
+    printf 'SMS_MYMOBILEAPI_SECRET=\n'
+    printf 'PYTHONDONTWRITEBYTECODE=1\n'
+  } > "${env_file}"
+fi
+umask 0027
+chown root:immploy "${env_file}"
+chmod 0640 "${env_file}"
+chown root:immploy /etc/immploy/legacy-mysql.json
+chmod 0640 /etc/immploy/legacy-mysql.json
+
+if [[ ! -s /etc/pki/tls/private/immploy-ca.key ]]; then
+  openssl genrsa -out /etc/pki/tls/private/immploy-ca.key 4096
+  chmod 0600 /etc/pki/tls/private/immploy-ca.key
+  openssl req -x509 -new -sha256 -days 3650 \
+    -key /etc/pki/tls/private/immploy-ca.key \
+    -subj '/CN=IMMploy Internal Certificate Authority' \
+    -out /etc/pki/tls/certs/immploy-ca.crt
+fi
+
+if [[ ! -s /etc/pki/tls/private/immploy-server.key ]]; then
+  openssl genrsa -out /etc/pki/tls/private/immploy-server.key 3072
+  chmod 0600 /etc/pki/tls/private/immploy-server.key
+  openssl req -new \
+    -key /etc/pki/tls/private/immploy-server.key \
+    -subj '/CN=booking.immploy.com' \
+    -out /run/immploy-server.csr
+  printf 'subjectAltName=DNS:booking.immploy.com,IP:10.0.0.99,IP:10.0.1.101\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n' > /run/immploy-server.ext
+  openssl x509 -req -sha256 -days 825 \
+    -in /run/immploy-server.csr \
+    -CA /etc/pki/tls/certs/immploy-ca.crt \
+    -CAkey /etc/pki/tls/private/immploy-ca.key \
+    -CAcreateserial \
+    -extfile /run/immploy-server.ext \
+    -out /etc/pki/tls/certs/immploy-server.crt
+  rm -f /run/immploy-server.csr /run/immploy-server.ext
+fi
+chmod 0644 /etc/pki/tls/certs/immploy-ca.crt /etc/pki/tls/certs/immploy-server.crt
+
+python3.12 -m venv "${venv}"
+"${venv}/bin/python" -m pip install --upgrade pip
+"${venv}/bin/pip" install --requirement "${backend_root}/requirements.txt"
+chown -R root:immploy "${venv}"
+chmod -R g=rX,o= "${venv}"
+
+chown -R root:immploy "${app_root}"
+chmod -R g=rX,o= "${app_root}"
+
+find /var/www/immploy -mindepth 1 -delete
+cp -a "${app_root}/frontend/dist/." /var/www/immploy/
+chown -R root:nginx /var/www/immploy
+find /var/www/immploy -type d -exec chmod 0750 {} +
+find /var/www/immploy -type f -exec chmod 0640 {} +
+
+install -m 0644 "${deploy_root}/immploy-web@.service" /etc/systemd/system/immploy-web@.service
+install -m 0644 "${deploy_root}/immploy-sync.service" /etc/systemd/system/immploy-sync.service
+install -m 0644 "${deploy_root}/immploy-sync.timer" /etc/systemd/system/immploy-sync.timer
+install -m 0644 "${deploy_root}/immploy-sms.service" /etc/systemd/system/immploy-sms.service
+install -m 0644 "${deploy_root}/immploy-sms.timer" /etc/systemd/system/immploy-sms.timer
+install -m 0644 "${deploy_root}/immploy-backup.service" /etc/systemd/system/immploy-backup.service
+install -m 0644 "${deploy_root}/immploy-backup.timer" /etc/systemd/system/immploy-backup.timer
+install -o root -g postgres -m 0750 "${deploy_root}/immploy-backup" /usr/local/sbin/immploy-backup
+install -m 0644 "${deploy_root}/nginx-immploy.conf" /etc/nginx/conf.d/immploy.conf
+
+printf 'POSTGRES_DB=immploy_locum\nBACKUP_RETENTION_DAYS=14\nPRIVATE_MEDIA_ROOT=/var/lib/immploy/private-media\n' > /etc/immploy/backup.env
+chown root:root /etc/immploy/backup.env
+chmod 0640 /etc/immploy/backup.env
+
+runuser -u immploy -- env -i PATH="${venv}/bin:/usr/bin:/bin" bash -c "set -a; source '${env_file}'; set +a; cd '${backend_root}'; '${venv}/bin/python' manage.py migrate --noinput; '${venv}/bin/python' manage.py collectstatic --noinput"
+
+chown -R immploy:nginx /var/www/immploy-static
+find /var/www/immploy-static -type d -exec chmod 0750 {} +
+find /var/www/immploy-static -type f -exec chmod 0640 {} +
+
+semanage fcontext -a -t httpd_sys_content_t '/var/www/immploy(/.*)?' 2>/dev/null || semanage fcontext -m -t httpd_sys_content_t '/var/www/immploy(/.*)?'
+semanage fcontext -a -t httpd_sys_content_t '/var/www/immploy-static(/.*)?' 2>/dev/null || semanage fcontext -m -t httpd_sys_content_t '/var/www/immploy-static(/.*)?'
+restorecon -RF /var/www/immploy /var/www/immploy-static /etc/nginx
+setsebool -P httpd_can_network_connect 1
+
+nginx -t
+systemctl daemon-reload
+systemctl enable --now immploy-web@8001.service immploy-web@8002.service nginx immploy-sync.timer immploy-sms.timer immploy-backup.timer
+systemctl reload nginx
+
+# Retire the former single listener only after both balanced instances are up
+# and Nginx has accepted the new upstream configuration. Keep its unit file on
+# upgraded hosts as a deliberate rollback option.
+if systemctl cat immploy.service >/dev/null 2>&1; then
+  systemctl disable --now immploy.service
+fi
+firewall-cmd --permanent --add-service=http
+firewall-cmd --permanent --add-service=https
+firewall-cmd --reload
+
+printf 'IMMploy production services installed.\n'

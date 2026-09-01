@@ -1,0 +1,37 @@
+[Unit]
+Description=IMMploy Locum Booking Django web instance on port %i
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=notify
+NotifyAccess=all
+User=immploy
+Group=immploy
+WorkingDirectory=/opt/immploy/current/backend
+EnvironmentFile=/etc/immploy/immploy.env
+Environment=DJANGO_PRIVATE_MEDIA_ROOT=/var/lib/immploy/private-media
+ExecStart=/opt/immploy/venv/bin/gunicorn config.wsgi:application --bind 127.0.0.1:%i --workers 1 --threads 2 --timeout 60 --graceful-timeout 30 --max-requests 1000 --max-requests-jitter 100 --access-logfile - --error-logfile -
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=45
+KillSignal=SIGQUIT
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+StateDirectory=immploy
+StateDirectoryMode=0750
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

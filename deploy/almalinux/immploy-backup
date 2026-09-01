@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${POSTGRES_DB:?POSTGRES_DB is required}"
+: "${BACKUP_RETENTION_DAYS:=14}"
+: "${PRIVATE_MEDIA_ROOT:=/var/lib/immploy/private-media}"
+
+backup_root=/var/backups/immploy
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+database_temporary="${backup_root}/.${POSTGRES_DB}-${stamp}.dump.tmp"
+database_final="${backup_root}/${POSTGRES_DB}-${stamp}.dump"
+documents_temporary="${backup_root}/.private-media-${stamp}.tar.gz.tmp"
+documents_final="${backup_root}/private-media-${stamp}.tar.gz"
+
+cleanup() {
+  rm -f "${database_temporary}" "${documents_temporary}"
+}
+trap cleanup EXIT
+
+install -d -m 0700 -o root -g root "${backup_root}"
+runuser -u postgres -- pg_dump --format=custom "${POSTGRES_DB}" > "${database_temporary}"
+chmod 0600 "${database_temporary}"
+mv "${database_temporary}" "${database_final}"
+
+if [[ -d "${PRIVATE_MEDIA_ROOT}" ]]; then
+  tar --create --gzip --file="${documents_temporary}" \
+    --directory="$(dirname "${PRIVATE_MEDIA_ROOT}")" \
+    "$(basename "${PRIVATE_MEDIA_ROOT}")"
+  chmod 0600 "${documents_temporary}"
+  mv "${documents_temporary}" "${documents_final}"
+fi
+
+find "${backup_root}" -type f -name "${POSTGRES_DB}-*.dump" -mtime "+${BACKUP_RETENTION_DAYS}" -delete
+find "${backup_root}" -type f -name "private-media-*.tar.gz" -mtime "+${BACKUP_RETENTION_DAYS}" -delete
+printf 'Created %s' "${database_final}"
+if [[ -f "${documents_final}" ]]; then
+  printf ' and %s' "${documents_final}"
+fi
+printf '\n'

@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ${EUID} -ne 0 ]]; then
+  printf 'Run this helper as root.\n' >&2
+  exit 1
+fi
+
+cert=/etc/pki/tls/certs/immploy-server.crt
+key=/etc/pki/tls/private/immploy-server.key
+env_file=/etc/immploy/immploy.env
+nginx_file=/etc/nginx/conf.d/immploy.conf
+deploy_nginx=/opt/immploy/current/deploy/almalinux/nginx-immploy.conf
+
+install -m 0600 "${cert}" /run/immploy-server.crt.previous
+install -m 0600 "${key}" /run/immploy-server.key.previous
+install -m 0600 "${env_file}" /run/immploy.env.previous
+install -m 0600 "${nginx_file}" /run/immploy-nginx.previous
+
+rollback() {
+  install -o root -g root -m 0644 /run/immploy-server.crt.previous "${cert}"
+  install -o root -g root -m 0600 /run/immploy-server.key.previous "${key}"
+  install -o root -g immploy -m 0640 /run/immploy.env.previous "${env_file}"
+  install -o root -g root -m 0644 /run/immploy-nginx.previous "${nginx_file}"
+  restorecon "${cert}" "${key}" "${env_file}" "${nginx_file}"
+  systemctl restart immploy-web@8001.service immploy-web@8002.service nginx.service || true
+}
+trap rollback ERR
+
+openssl genrsa -out /run/immploy-server.key.new 3072
+openssl req -new \
+  -key /run/immploy-server.key.new \
+  -subj '/CN=booking.immploy.com' \
+  -out /run/immploy-server.csr
+printf 'subjectAltName=DNS:booking.immploy.com,IP:10.0.0.99,IP:10.0.1.101\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n' > /run/immploy-server.ext
+openssl x509 -req -sha256 -days 825 \
+  -in /run/immploy-server.csr \
+  -CA /etc/pki/tls/certs/immploy-ca.crt \
+  -CAkey /etc/pki/tls/private/immploy-ca.key \
+  -CAcreateserial \
+  -extfile /run/immploy-server.ext \
+  -out /run/immploy-server.crt.new
+openssl verify -CAfile /etc/pki/tls/certs/immploy-ca.crt /run/immploy-server.crt.new
+
+install -o root -g root -m 0600 /run/immploy-server.key.new "${key}"
+install -o root -g root -m 0644 /run/immploy-server.crt.new "${cert}"
+install -o root -g root -m 0644 "${deploy_nginx}" "${nginx_file}"
+
+python3.12 - "${env_file}" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding='utf-8')
+replacements = {
+    'DJANGO_ALLOWED_HOSTS=10.0.0.99,10.0.1.101,127.0.0.1,localhost':
+        'DJANGO_ALLOWED_HOSTS=booking.immploy.com,10.0.0.99,10.0.1.101,127.0.0.1,localhost',
+    'DJANGO_CSRF_TRUSTED_ORIGINS=https://10.0.0.99,https://10.0.1.101':
+        'DJANGO_CSRF_TRUSTED_ORIGINS=https://booking.immploy.com,https://10.0.0.99,https://10.0.1.101',
+}
+for old, new in replacements.items():
+    if new in text:
+        continue
+    if text.count(old) != 1:
+        raise SystemExit(f'Expected one production setting line for {old.split("=", 1)[0]}')
+    text = text.replace(old, new)
+path.write_text(text, encoding='utf-8')
+PY
+chown root:immploy "${env_file}"
+chmod 0640 "${env_file}"
+restorecon "${cert}" "${key}" "${env_file}" "${nginx_file}"
+
+nginx -t
+systemctl restart immploy-web@8001.service immploy-web@8002.service nginx.service
+systemctl is-active --quiet immploy-web@8001.service immploy-web@8002.service nginx.service
+runuser -u immploy -- env -i PATH=/opt/immploy/venv/bin:/usr/bin:/bin bash -c 'set -a; source /etc/immploy/immploy.env; set +a; cd /opt/immploy/current/backend; /opt/immploy/venv/bin/python manage.py check --deploy'
+curl --fail --silent --show-error \
+  --cacert /etc/pki/tls/certs/immploy-ca.crt \
+  --resolve booking.immploy.com:443:127.0.0.1 \
+  https://booking.immploy.com/healthz | grep -qx ok
+
+trap - ERR
+rm -f /run/immploy-server.crt.previous /run/immploy-server.key.previous \
+  /run/immploy.env.previous /run/immploy-nginx.previous \
+  /run/immploy-server.key.new /run/immploy-server.crt.new \
+  /run/immploy-server.csr /run/immploy-server.ext
+printf 'BOOKING_HOSTNAME_SERVER_READY\n'
